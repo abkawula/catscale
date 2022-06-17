@@ -4,12 +4,14 @@ import time
 import sys
 from influx import INFLUX
 import datetime
+from collections import deque
+import statistics
 
 EMULATE_HX711=False
 
 referenceUnit_A = 1080.6
-# referenceUnit_A = 1
 referenceUnit_B = 108.05
+max_queue_length = 10
 
 if not EMULATE_HX711:
     import RPi.GPIO as GPIO
@@ -42,6 +44,10 @@ def getDatapoints(food, water):
         } 
     }]
 
+def should_write_data(queue_a, queue_b):
+    return ((len(queue_a == max_queue_length and statistics.stdev(queue_a) > 1))
+    or (len(queue_b == max_queue_length and statistics.stdev(queue_b) > 1)))
+
 hx = HX711(dout=5, pd_sck=6, tare_A=-275555.6666666667, gain=128)
 influx = INFLUX('localhost', 8086, 'home')
 
@@ -65,33 +71,25 @@ hx.set_reference_unit_B(referenceUnit_B)
 
 hx.reset()
 
-# hx.tare_A()
-# hx.tare_B()
-
 hx.set_offset_A(-275514)
 hx.set_offset_B(44993.33)
 
 print("Tare done! Add weight now...")
-
-# to use both channels, you'll need to tare them both
-#hx.tare_A()
-#hx.tare_B()
+queue_a = deque(maxlen=max_queue_length)
+queue_b = deque(maxlen=max_queue_length)
 
 while True:
     try:
-        # These three lines are usefull to debug wether to use MSB or LSB in the reading formats
-        # for the first parameter of "hx.set_reading_format("LSB", "MSB")".
-        # Comment the two lines "val = hx.get_weight(5)" and "print val" and uncomment these three lines to see what it prints.
-        
-        # np_arr8_string = hx.get_np_arr8_string()
-        # binary_string = hx.get_binary_string()
-        # print binary_string + " " + np_arr8_string
-        
-        # Prints the weight. Comment if you're debbuging the MSB and LSB issue.
         val_A = hx.get_weight_A(5)
         val_B = hx.get_weight_B(5)
-        datapoints = getDatapoints(food = val_A, water = val_B)
-        influx.write_points(datapoints)
+        queue_a.append(val_A)
+        queue_b.append(val_B)
+        
+        if should_write_data(queue_a, queue_b):
+            datapoints = getDatapoints(food = statistics.mean(queue_a), water = statistics.mean(queue_b))
+            influx.write_points(datapoints)
+            queue_a.clear()
+            queue_b.clear()
 
         # To get weight from both channels (if you have load cells hooked up 
         # to both channel A and B), do something like this
